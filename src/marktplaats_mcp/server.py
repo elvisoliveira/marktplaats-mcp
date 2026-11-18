@@ -606,6 +606,19 @@ def search_listings(
     return result
 
 
+def _page_config(html: str) -> dict:
+    # The listing page embeds its data as `window.__CONFIG__ = {...};` in a script tag.
+    marker = "window.__CONFIG__ = "
+    start = html.find(marker)
+    if start == -1:
+        return {}
+    try:
+        config, _ = json.JSONDecoder().raw_decode(html, start + len(marker))
+        return config
+    except json.JSONDecodeError:
+        return {}
+
+
 @mcp.tool()
 def get_listing_details(listing_id: str) -> dict[str, Any]:
     """
@@ -692,46 +705,49 @@ def get_listing_details(listing_id: str) -> dict[str, Any]:
                 if specs:
                     result["specs"] = specs
 
-        # Extract attributes/kenmerken
+        # Kenmerken: label/value pairs rendered server-side.
         attributes = {}
-        attr_patterns = [
-            (r"Conditie\s*(\w+)", "conditie"),
-            (r"Merk\s*(\w+)", "merk"),
-            (r"Framehoogte\s*([\d\s\-totcm]+)", "framehoogte"),
-            (r"Schermgrootte\s*([\d\s\-inch]+)", "schermgrootte"),
-            (r"Werkgeheugen[^\d]*([\d]+\s*GB)", "werkgeheugen"),
-            (r"Processorsnelheid[^\d]*([\d,\.]+\s*GHz)", "processorsnelheid"),
-            (r"Type opslag\s*(\w+)", "type_opslag"),
-        ]
-
-        for pattern, key in attr_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                attributes[key] = match.group(1).strip()
-
+        for item in soup.select(".Attributes-module-item"):
+            label = item.select_one(".Attributes-module-label")
+            value = item.select_one(".Attributes-module-value")
+            if label and value:
+                attributes[label.get_text(strip=True)] = value.get_text(strip=True)
         if attributes:
             result["attributes"] = attributes
 
-        # Extract statistics
-        views_match = re.search(r"([\d.]+)x bekeken", text)
-        saved_match = re.search(r"(\d+)x bewaard", text)
-        date_match = re.search(r"Sinds (\d+ \w+ '\d+)", text)
-
-        stats = {}
-        if views_match:
-            stats["views"] = views_match.group(1)
-        if saved_match:
-            stats["saved"] = int(saved_match.group(1))
-        if date_match:
-            stats["online_since"] = date_match.group(1)
-
-        if stats:
-            result["statistics"] = stats
-
-        # Extract location
-        location_match = re.search(r"Locatie[^\w]*(\w[\w\s]+?)(?:[\d.]+x bekeken|Toon|Op de kaart)", text)
-        if location_match:
-            result["location"] = location_match.group(1).strip()
+        listing = _page_config(response.text).get("listing", {})
+        if listing:
+            price_info = listing.get("priceInfo", {})
+            # FIXED, MIN_BID (asking price, bids allowed), FAST_BID (bids only), SEE_DESCRIPTION...
+            result["price_type"] = price_info.get("priceType")
+            bids = listing.get("bidsInfo", {}).get("bids", [])
+            if bids:
+                result["bids"] = [
+                    {"amount": f"€ {bid['value'] / 100:.2f}", "date": bid.get("date")}
+                    for bid in bids
+                ]
+            stats = listing.get("stats", {})
+            if stats:
+                result["statistics"] = {
+                    "views": stats.get("viewCount"),
+                    "saved": stats.get("favoritedCount"),
+                    "online_since": stats.get("since"),
+                }
+            seller = listing.get("seller", {})
+            location = seller.get("location", {})
+            if location:
+                result["location"] = location.get("cityName")
+            if seller:
+                result["seller"] = {
+                    "id": seller.get("id"),
+                    "name": seller.get("name"),
+                    "type": seller.get("sellerType"),
+                    "active_years": seller.get("activeYears"),
+                }
+            category = listing.get("category", {})
+            if category:
+                result["category"] = f"{category.get('parentName')} > {category.get('name')}"
+            result["reserved"] = listing.get("isReserved", False)
 
         return result
 
