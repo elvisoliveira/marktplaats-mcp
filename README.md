@@ -75,6 +75,7 @@ Zoek advertenties met filters:
 - `condition` - Conditie (new, used, as_good_as_new, etc.)
 - `attribute_ids` - Categorie-specifieke filters (gebruik `get_category_filters`)
 - `exclude_reserved` - Verberg gereserveerde advertenties (standaard `true`)
+- `site` - `marktplaats` (standaard) of `2dehands` (2dehands.be); ook op `get_listing_details`, `get_seller_info` en `get_category_filters`
 
 #### `get_listing_details`
 Haal volledige advertentie details op inclusief:

@@ -24,9 +24,33 @@ HTML_HEADERS = {
     "Accept": "text/html,application/xhtml+xml",
 }
 
-SEARCH_URL = "https://www.marktplaats.nl/lrp/api/search"
-SELLER_URL = "https://www.marktplaats.nl/v/api/seller-profile"
-LISTING_URL = "https://link.marktplaats.nl"
+# Marktplaats and 2dehands are the same Adevinta platform: same API, same category ids.
+SITES = {"marktplaats": "marktplaats.nl", "2dehands": "2dehands.be"}
+
+
+def _domain(site: str) -> str:
+    """Domain of a supported site; anything else is rejected before it reaches a URL."""
+    if site not in SITES:
+        raise ValueError(f"Unknown site: {site}. Use one of: {', '.join(SITES)}")
+    return SITES[site]
+
+
+def _site_error(site: str) -> dict | None:
+    if site not in SITES:
+        return {"error": f"Unknown site: {site}. Use one of: {', '.join(SITES)}"}
+    return None
+
+
+def _search_url(site: str) -> str:
+    return f"https://www.{_domain(site)}/lrp/api/search"
+
+
+def _seller_url(site: str) -> str:
+    return f"https://www.{_domain(site)}/v/api/seller-profile"
+
+
+def _listing_url(site: str) -> str:
+    return f"https://link.{_domain(site)}"
 
 # Traits that indicate a business seller
 BUSINESS_TRAITS = {
@@ -310,7 +334,7 @@ def _is_reserved(listing: dict) -> bool:
     return bool(listing.get("reserved")) or listing.get("priceInfo", {}).get("priceType") == "RESERVED"
 
 
-def _format_listing(listing: dict, include_specs: bool = False) -> dict:
+def _format_listing(listing: dict, include_specs: bool = False, site: str = "marktplaats") -> dict:
     """Format a listing from API response to a clean dict."""
     price_info = listing.get("priceInfo", {})
     location = listing.get("location", {})
@@ -333,7 +357,7 @@ def _format_listing(listing: dict, include_specs: bool = False) -> dict:
     description = listing.get("description", "")
     title = listing.get("title", "")
 
-    original_link = f"https://link.marktplaats.nl/{listing.get('itemId')}"
+    original_link = f"{_listing_url(site)}/{listing.get('itemId')}"
 
     result = {
         "id": listing.get("itemId"),
@@ -465,6 +489,7 @@ def search_listings(
     extract_specs: bool = False,
     compact: bool = False,
     exclude_reserved: bool = True,
+    site: str = "marktplaats",
 ) -> dict[str, Any]:
     """
     Search for listings on Marktplaats.nl.
@@ -491,10 +516,13 @@ def search_listings(
                  Condition: N=new, Z=as good as new, G=used, R=refurbished, D=defect.
         exclude_reserved: Drop listings already reserved ("Gereserveerd") for another buyer
                           (default: True). With False, reserved listings carry reserved=true.
+        site: "marktplaats" (marktplaats.nl, default) or "2dehands" (2dehands.be, Belgium)
 
     Returns:
         Dictionary with total_count, returned_count, and list of listings
     """
+    if error := _site_error(site):
+        return error
     if not query and not category and not subcategory:
         return {"error": "Please provide a search query or category"}
 
@@ -558,7 +586,7 @@ def search_listings(
 
     # Make request
     try:
-        response = _get_request(SEARCH_URL, params)
+        response = _get_request(_search_url(site), params)
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as e:
@@ -576,7 +604,7 @@ def search_listings(
     if compact:
         listings = [_format_listing_compact(listing) for listing in raw_listings]
     else:
-        listings = [_format_listing(listing, include_specs=extract_specs) for listing in raw_listings]
+        listings = [_format_listing(listing, include_specs=extract_specs, site=site) for listing in raw_listings]
 
     # Filter by seller type if requested
     if seller_type:
@@ -625,16 +653,19 @@ def search_listings(
 
 
 @mcp.tool()
-def get_listing_details(listing_id: str) -> dict[str, Any]:
+def get_listing_details(listing_id: str, site: str = "marktplaats") -> dict[str, Any]:
     """
     Get full details of a specific listing including complete description and all images.
 
     Args:
         listing_id: The listing ID (e.g., "m2340580395")
+        site: "marktplaats" (marktplaats.nl, default) or "2dehands" (2dehands.be, Belgium)
 
     Returns:
         Full listing details including description, images, attributes, and seller info
     """
+    if error := _site_error(site):
+        return error
     if not listing_id:
         return {"error": "Please provide a listing_id"}
 
@@ -644,7 +675,7 @@ def get_listing_details(listing_id: str) -> dict[str, Any]:
 
     try:
         # Fetch the listing page
-        response = _get_request(f"{LISTING_URL}/{listing_id}", headers=HTML_HEADERS)
+        response = _get_request(f"{_listing_url(site)}/{listing_id}", headers=HTML_HEADERS)
         response.raise_for_status()
 
         if response.status_code == 404 or "niet gevonden" in response.text.lower():
@@ -760,21 +791,24 @@ def get_listing_details(listing_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_seller_info(seller_id: int) -> dict[str, Any]:
+def get_seller_info(seller_id: int, site: str = "marktplaats") -> dict[str, Any]:
     """
     Get detailed information about a seller including ratings and verification status.
 
     Args:
         seller_id: The seller's numeric ID
+        site: "marktplaats" (marktplaats.nl, default) or "2dehands" (2dehands.be, Belgium)
 
     Returns:
         Seller profile with ratings, verification status, and statistics
     """
+    if error := _site_error(site):
+        return error
     if not seller_id:
         return {"error": "Please provide a seller_id"}
 
     try:
-        response = _get_request(f"{SELLER_URL}/{seller_id}")
+        response = _get_request(f"{_seller_url(site)}/{seller_id}")
         response.raise_for_status()
         data = response.json()
 
@@ -826,6 +860,7 @@ def list_categories() -> dict[str, Any]:
 def get_category_filters(
     category: str | None = None,
     subcategory: str | None = None,
+    site: str = "marktplaats",
 ) -> dict[str, Any]:
     """
     Get available filter options for a specific category (like RAM, brand, screen size, etc.).
@@ -833,10 +868,13 @@ def get_category_filters(
     Args:
         category: Main category name (e.g., "computers en software")
         subcategory: Subcategory name (e.g., "laptops")
+        site: "marktplaats" (marktplaats.nl, default) or "2dehands" (2dehands.be, Belgium)
 
     Returns:
         Available filters with their IDs that can be used in search_listings
     """
+    if error := _site_error(site):
+        return error
     if not category and not subcategory:
         return {"error": "Please provide a category or subcategory"}
 
@@ -860,7 +898,7 @@ def get_category_filters(
             return {"error": f"Unknown category: {category}"}
 
     try:
-        response = _get_request(SEARCH_URL, params)
+        response = _get_request(_search_url(site), params)
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as e:
