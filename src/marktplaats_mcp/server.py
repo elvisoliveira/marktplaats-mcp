@@ -305,6 +305,11 @@ def _extract_specs_from_description(description: str, title: str = "") -> dict[s
     return specs
 
 
+def _is_reserved(listing: dict) -> bool:
+    """A reserved listing keeps its priceType (e.g. MIN_BID); the API flags it in `reserved`."""
+    return bool(listing.get("reserved")) or listing.get("priceInfo", {}).get("priceType") == "RESERVED"
+
+
 def _format_listing(listing: dict, include_specs: bool = False) -> dict:
     """Format a listing from API response to a clean dict."""
     price_info = listing.get("priceInfo", {})
@@ -336,6 +341,7 @@ def _format_listing(listing: dict, include_specs: bool = False) -> dict:
         "description": description[:200] + "..." if len(description) > 200 else description,
         "price": _parse_price_type(price_info.get("priceType", ""), price_info.get("priceCents", 0)),
         "price_cents": price_info.get("priceCents", 0),
+        "reserved": _is_reserved(listing),
         "condition": next((attr.get("value") for attr in listing.get("attributes", []) if attr.get("key") == "condition"), None),
         "location": {
             "city": location.get("cityName"),
@@ -419,6 +425,9 @@ def _format_listing_compact(listing: dict) -> dict:
     }
 
     # Only include optional fields if they have values
+    if _is_reserved(listing):
+        result["reserved"] = True
+
     if distance_km is not None:
         result["km"] = distance_km
 
@@ -455,6 +464,7 @@ def search_listings(
     attribute_ids: list[int] | None = None,
     extract_specs: bool = False,
     compact: bool = False,
+    exclude_reserved: bool = True,
 ) -> dict[str, Any]:
     """
     Search for listings on Marktplaats.nl.
@@ -479,6 +489,8 @@ def search_listings(
         compact: Return minimal response format (~75% smaller). Omits description, image, links.
                  Use get_listing_details(id) for full info. Seller: B=business, P=private.
                  Condition: N=new, Z=as good as new, G=used, R=refurbished, D=defect.
+        exclude_reserved: Drop listings already reserved ("Gereserveerd") for another buyer
+                          (default: True). With False, reserved listings carry reserved=true.
 
     Returns:
         Dictionary with total_count, returned_count, and list of listings
@@ -554,11 +566,17 @@ def search_listings(
     except json.JSONDecodeError:
         return {"error": "Invalid response from Marktplaats"}
 
+    raw_listings = data.get("listings", [])
+    # Pagination follows the API page, not what survives the local filters below.
+    next_offset = offset + len(raw_listings)
+    if exclude_reserved:
+        raw_listings = [listing for listing in raw_listings if not _is_reserved(listing)]
+
     # Format results based on compact mode
     if compact:
-        listings = [_format_listing_compact(listing) for listing in data.get("listings", [])]
+        listings = [_format_listing_compact(listing) for listing in raw_listings]
     else:
-        listings = [_format_listing(listing, include_specs=extract_specs) for listing in data.get("listings", [])]
+        listings = [_format_listing(listing, include_specs=extract_specs) for listing in raw_listings]
 
     # Filter by seller type if requested
     if seller_type:
@@ -583,8 +601,8 @@ def search_listings(
             "total": total_count,
             "listings": listings,
         }
-        if offset + len(listings) < total_count:
-            result["next"] = offset + len(listings)
+        if next_offset < total_count:
+            result["next"] = next_offset
         return result
 
     # Full response format
@@ -600,8 +618,8 @@ def search_listings(
         result["note"] = "Provide zip_code parameter (e.g., '1016LV') to enable distance filtering and see distances"
 
     # Add pagination hint
-    if offset + len(listings) < total_count:
-        result["next_offset"] = offset + len(listings)
+    if next_offset < total_count:
+        result["next_offset"] = next_offset
 
     return result
 
@@ -637,6 +655,8 @@ def get_listing_details(listing_id: str) -> dict[str, Any]:
         result = {
             "id": listing_id,
             "url": response.url,
+            # The page state JSON carries the flag; the visible price then reads "Gereserveerd".
+            "reserved": '"isReserved":true' in response.text,
         }
 
         # Extract JSON-LD data

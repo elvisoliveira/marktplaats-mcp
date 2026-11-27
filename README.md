@@ -74,6 +74,7 @@ Zoek advertenties met filters:
 - `price_from` / `price_to` - Prijsrange
 - `condition` - Conditie (new, used, as_good_as_new, etc.)
 - `attribute_ids` - Categorie-specifieke filters (gebruik `get_category_filters`)
+- `exclude_reserved` - Verberg gereserveerde advertenties (standaard `true`)
 
 #### `get_listing_details`
 Haal volledige advertentie details op inclusief:
